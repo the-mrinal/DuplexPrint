@@ -1,0 +1,8 @@
+# Build artifact — rebuild with ./build.sh
+DuplexPrint.app/
+
+# Personal documents (rescued print jobs, books) — never publish
+resume-job9.pdf
+*.pdf
+
+.DS_Store
