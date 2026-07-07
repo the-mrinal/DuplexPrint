@@ -1,5 +1,6 @@
-# Build artifact — rebuild with ./build.sh
+# Build artifacts — rebuild with ./build.sh / scripts/make-dmg.sh
 DuplexPrint.app/
+dist/
 
 # Personal documents (rescued print jobs, books) — never publish
 resume-job9.pdf

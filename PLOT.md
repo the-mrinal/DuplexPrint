@@ -38,6 +38,7 @@ Under the hood it shells out to CUPS (`lp`, `lpstat`, `cancel`, `cupsenable`,
 | App bundle (built) | `Documents/DuplexPrint/DuplexPrint.app` |
 | Installed app | `~/Applications/DuplexPrint.app` |
 | Job library (persistent) | `~/Library/Application Support/DuplexPrint/jobs/<id>/{job.json, document.pdf}` |
+| Book library (split/extracted PDFs) | `~/Library/Application Support/DuplexPrint/books/<id>/{book.json, part-1.pdf …}` |
 | Rescued book spool file | `Documents/DuplexPrint/resume-job9.pdf` (187 pages) |
 | Debug journal | `Documents/DuplexPrint/TROUBLESHOOTING.md` |
 
@@ -89,6 +90,36 @@ Key pieces:
   setting cuts USB power otherwise).
 - **Safety constants** in every submission: `OutputOrder=Normal` (the L130 PPD
   defaults to Reverse!), `EPIJ_BSSv=0` (skip-blank-page shifts duplex pairing).
+- **Print modes** (v4) — a `PrintMode` picker: `duplex` (the classic two-pass
+  flip flow) or `normal` (single pass, whole document, no flip). The mode is
+  frozen per job (`SavedState.printMode`, nil = duplex for pre-v4 jobs) and all
+  sheet math routes through `docPageForSheet`/`totalSheetsThisPass`, which are
+  mode-aware (normal: sheet N = page N). `jobOptions` branches on mode — normal
+  emits no `page-set`/`orientation-requested`, but still pins `OutputOrder` and
+  `EPIJ_BSSv=0`.
+- **Book library** (v4, reworked v4.1) — "Split this PDF or pick pages…" on the
+  setup screen opens a full-window **split screen** (`Stage.split`, `SplitView`):
+  two tabs, "Equal parts" (stepper; per-part cards show first/last page
+  thumbnails, page range, sheet count, an expandable grid of EVERY page inside,
+  and ◀ ▶ arrows that move each boundary — by 2 pages in duplex so starts stay
+  odd/fresh-sheet) and "Just some pages" (typed ranges "5-20, 35, 40-42", kept
+  in typed order, with a live thumbnail grid of exactly what you'll get).
+  Nothing is written until the confirm button; `splitLoadedDocument(atStarts:)`
+  takes the explicit boundary list (`partSizes` still computes the even-snapped
+  defaults; 187÷4 → 48/48/48/43). Parts are real PDFs built with PDFKit (page
+  *copies* — inserting live pages would re-parent them). Confirming lands on the
+  **book detail page** (`Stage.book(id)`, `BookDetailView`): one card per part
+  with thumbnail, status (Not printed / In progress / Printed — derived from the
+  jobs list + `BookPart.printed`), Print / Resume / Print again, "Save a copy…"
+  export, per-part reset, expandable all-pages grid, and book-level delete. The
+  main screen lists books as compact rows with an Open button (`BooksSection`).
+  Printing a part goes through the ordinary job pipeline (`startJob` with
+  `bookID`/`partIndex`); `clearState()` marks the part printed when both sides
+  finish. `Book.printMode` is frozen at split time and re-applied by `printPart`
+  (a normal-snapped book printed duplex would bleed a sheet's back across parts).
+- **Self-test harness** (v4) — `DuplexPrint --selftest` (hidden CLI flag) checks
+  the split/range/jobOptions maths, old-format `job.json` decoding, and a real
+  on-disk split, then exits. Run it after any change.
 
 ## 5. Version history (all on 7 July 2026)
 
@@ -106,6 +137,9 @@ Key pieces:
 | v3.5 | Progress parser accepts Epson's negative totals ("Page 9 of -22") — fixed blindness + false-recovery risk |
 | v3.6 | Auto-attach to live jobs on launch |
 | v3.7–v3.8 | Large, window-filling, high-res previews |
+| v4.0 (8 Jul) | Print-mode picker (two-sided / normal single-pass); book library: split a PDF into N parts (even-snapped boundaries) or extract typed page ranges, with per-part printed-status tracking and Save-a-copy export; `--selftest` harness |
+| v4.1 (8 Jul) | Visual split screen: per-part first/last-page thumbnails, expandable every-page grids, adjustable boundaries (fresh-sheet parity kept in duplex); dedicated book detail page (Print/Resume per part) reached after splitting or via Open on the main screen |
+| v4.2 (8 Jul) | Preview-size slider (AppStorage, shared by all grids) + click-any-thumbnail full-page viewer with ←/→; split-screen crash fix (§11 of troubleshooting); print-a-part confirmation sheet showing/editing every setting before the job starts; settings summary line on printing & resume screens; quality/paper/colour persisted across launches; full 8-level Epson quality ladder (Fast Economy 301 → Best 307) with Epson's own names |
 
 ## 6. The book that built this app
 
@@ -118,8 +152,8 @@ Every failure became a feature. See `TROUBLESHOOTING.md` for each incident.
 
 ## 7. Roadmap — not yet built
 
-- **Batching** for passes > 30 sheets (output tray capacity) — chunked
-  odd→flip→even cycles, or at least a "tray nearly full" nudge.
+- ~~**Batching** for passes > 30 sheets~~ — covered by v4's split-into-parts
+  (split a big book so each part's pass fits the tray).
 - **Calibration wizard** — the 4-page test exists (Advanced), but a guided
   first-run wizard that asks "which of these came out right?" and sets the two
   flags automatically would be friendlier.

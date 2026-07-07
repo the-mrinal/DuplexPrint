@@ -1,0 +1,58 @@
+name: Build DMG
+
+# Two ways to get a DMG:
+#  • Manually: Actions tab → "Build DMG" → Run workflow (optionally type a
+#    version). The DMG appears as a downloadable artifact on the run page.
+#  • Tag a release: `git tag v4.2 && git push origin v4.2` — builds the DMG
+#    AND publishes it as a GitHub Release with the file attached.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp into the app (e.g. 4.2). Empty = dev build."
+        required: false
+        default: ""
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # needed to create the Release on tag builds
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run self-tests
+        run: |
+          swiftc -O -parse-as-library -target arm64-apple-macos13.0 DuplexPrint.swift -o /tmp/duplexprint-selftest
+          /tmp/duplexprint-selftest --selftest
+
+      - name: Build universal DMG
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="dev"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          VERSION="$VERSION" ./scripts/make-dmg.sh
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DuplexPrint-${{ env.VERSION }}
+          path: dist/*.dmg
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (tag builds only)
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.dmg \
+            --title "DuplexPrint $GITHUB_REF_NAME" \
+            --generate-notes

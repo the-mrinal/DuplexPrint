@@ -144,7 +144,29 @@ sheet 24), not where the pass began. Attaching with `offset = sheetsCompleted`
 **Fix:** `SavedState.jobBaseSheets` records the pass offset at submit time; attach
 always uses that.
 
-## 11. Assorted CUPS/Epson facts worth remembering
+## 11. Crash (SIGTRAP) the moment a split finished — v4.1
+
+**Symptom:** Pressing "Split into these N parts" made the app vanish right as
+the split completed. Crash report: `EXC_BREAKPOINT (brk 1)` on the main thread
+inside `SplitView.partCard` (the DisclosureGroup content closure). The book
+itself WAS saved — the crash happened after `saveBook`.
+
+**Root cause:** On success, `createBook` cleared the loaded document
+(`pageCount = 0`) in the same update that switched screens. SwiftUI re-evaluated
+a still-mounted part card against the emptied document, so its range became
+`145...0` — and building `Array(start...end)` with `start > end` is a Swift
+fatal trap, which macOS reports as SIGTRAP/EXC_BREAKPOINT (not a memory smash).
+
+**Fix (two layers):** `SplitView.ranges` now validates its inputs
+(`pageCount > 0`, starts strictly increasing, last start ≤ pageCount) and
+returns `[]` — rendering no cards — whenever state is mid-transition; and
+`createBook` switches to the book page *before* clearing `pdfURL`/`pageCount`.
+
+**Moral:** a `@Published` model that a visible view derives ranges from must
+never be torn down before (or in the same transaction as) navigating away —
+or the view must tolerate the torn-down state. Belt and suspenders: do both.
+
+## 12. Assorted CUPS/Epson facts worth remembering
 
 - PPD path: `/etc/cups/ppd/EPSON_L130_Series_2.ppd`. No `*Duplex` keyword — the
   L130 has zero duplex support; manual flip is the only way.
