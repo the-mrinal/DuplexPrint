@@ -16,6 +16,15 @@ struct DuplexPrintApp: App {
             SelfTest.run()
             exit(0)
         }
+        // Hidden docs harness: `DuplexPrint --screenshots <dir>` renders the
+        // main screens to PNGs (for the README) and exits. No window needed.
+        if let i = CommandLine.arguments.firstIndex(of: "--screenshots"),
+           i + 1 < CommandLine.arguments.count {
+            MainActor.assumeIsolated {
+                ScreenshotMaker.run(outDir: CommandLine.arguments[i + 1])
+            }
+            exit(0)
+        }
     }
 
     var body: some Scene {
@@ -1061,6 +1070,14 @@ final class PrintController: ObservableObject {
         }
     }
 
+    /// --screenshots harness only: pose the printing screen with fake progress.
+    func demoPose(previewDoc doc: PDFDocument?, done: Int, current: Int?, status: String) {
+        previewDoc = doc
+        progressDone = done
+        progressCurrent = current
+        statusLine = status
+    }
+
     // MARK: Test document
 
     func useTestDocument() {
@@ -1085,6 +1102,141 @@ final class PrintController: ObservableObject {
         }
         ctx.closePDF()
         setDocument(url)
+    }
+}
+
+// MARK: - Screenshot harness (--screenshots <dir>; renders views offscreen)
+
+enum ScreenshotMaker {
+    @MainActor static func run(outDir: String) {
+        let out = URL(fileURLWithPath: outDir, isDirectory: true)
+        try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        // A friendly demo document.
+        let pdfURL = FileManager.default.temporaryDirectory.appendingPathComponent("LinearAlgebra.pdf")
+        makeDemoPDF(at: pdfURL, pages: 12)
+        let doc = PDFDocument(url: pdfURL)
+
+        let c = PrintController()
+        c.printers = ["EPSON_L130_Series_2"]
+        c.selectedPrinter = "EPSON_L130_Series_2"
+        c.isEpson = true
+        c.printMode = .duplex
+        c.quality = "Normal"
+        c.setDocument(pdfURL)
+
+        let book = Book(id: "demo", originalName: "LinearAlgebra.pdf", pageCount: 242,
+                        printMode: .duplex,
+                        parts: [BookPart(index: 1, startPage: 1, endPage: 82, printed: true),
+                                BookPart(index: 2, startPage: 83, endPage: 164, printed: false),
+                                BookPart(index: 3, startPage: 165, endPage: 242, printed: false)],
+                        createdAt: Date(), isExtraction: false)
+        c.books = [book]
+
+        UserDefaults.standard.set(200.0, forKey: "thumbHeight")
+
+        // The book page loads part PDFs from their real paths — stage them.
+        let demoDir = PrintController.bookDir("demo")
+        try? FileManager.default.createDirectory(at: demoDir, withIntermediateDirectories: true)
+        for i in 1...3 {
+            try? FileManager.default.copyItem(at: pdfURL,
+                                              to: PrintController.partURL(bookID: "demo", index: i))
+        }
+        defer { try? FileManager.default.removeItem(at: demoDir) }
+
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.prohibited)   // no Dock icon, no focus steal
+
+        save(SetupView(), c, width: 620, height: nil, name: "main-screen", to: out)
+        save(SplitView(demoDoc: doc, demoStarts: [1, 5, 9], demoPartCount: 3),
+             c, width: 820, height: 980, name: "split-screen", to: out)
+        save(BookDetailView(bookID: "demo"), c, width: 820, height: 900, name: "book-page", to: out)
+        save(PrintPartSheet(book: book, part: book.parts[1], onConfirm: {}, onCancel: {}),
+             c, width: 560, height: nil, name: "print-confirm", to: out)
+        c.demoPose(previewDoc: doc, done: 3, current: 4, status: "Printing sheet 4 of 6…")
+        save(PrintingView(pass: 1), c, width: 620, height: 760, name: "printing", to: out)
+        save(FlipView(), c, width: 620, height: nil, name: "flip", to: out)
+    }
+
+    /// Renders the view in a real (never-shown) window so AppKit-backed
+    /// controls draw properly, then captures the view hierarchy at 2×.
+    @MainActor private static func save<V: View>(_ view: V, _ c: PrintController,
+                                                 width: CGFloat, height: CGFloat?,
+                                                 name: String, to out: URL) {
+        let root = AnyView(
+            view.environmentObject(c)
+                .padding(24)
+                .frame(width: width)
+                .background(Color(nsColor: .windowBackgroundColor))
+        )
+        let host = NSHostingView(rootView: root)
+        let h = height ?? 10   // grow to fit below when no height given
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: h),
+                           styleMask: [.borderless], backing: .buffered, defer: false)
+        win.contentView = host
+        host.frame = NSRect(x: 0, y: 0, width: width, height: h)
+        host.layoutSubtreeIfNeeded()
+        if height == nil {
+            let fit = host.fittingSize
+            win.setContentSize(NSSize(width: width, height: max(fit.height, 10)))
+            host.frame = NSRect(x: 0, y: 0, width: width, height: max(fit.height, 10))
+            host.layoutSubtreeIfNeeded()
+        }
+        // Let SwiftUI settle (thumbnails, AppStorage, async body updates).
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        host.layoutSubtreeIfNeeded()
+
+        let b = host.bounds
+        guard b.width > 0, b.height > 0,
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                         pixelsWide: Int(b.width) * 2, pixelsHigh: Int(b.height) * 2,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                         isPlanar: false, colorSpaceName: .calibratedRGB,
+                                         bytesPerRow: 0, bitsPerPixel: 0) else {
+            print("FAIL  \(name)")
+            return
+        }
+        rep.size = b.size
+        host.cacheDisplay(in: b, to: rep)
+        guard let png = rep.representation(using: .png, properties: [:]) else {
+            print("FAIL  \(name)")
+            return
+        }
+        try? png.write(to: out.appendingPathComponent("\(name).png"))
+        print("wrote \(name).png")
+        win.close()
+    }
+
+    /// A 12-page PDF that looks like a real book in thumbnails.
+    private static func makeDemoPDF(at url: URL, pages: Int) {
+        var box = CGRect(x: 0, y: 0, width: 595, height: 842)
+        guard let ctx = CGContext(url as CFURL, mediaBox: &box, nil) else { return }
+        for i in 1...pages {
+            ctx.beginPDFPage(nil)
+            let ns = NSGraphicsContext(cgContext: ctx, flipped: false)
+            NSGraphicsContext.current = ns
+            NSColor(calibratedRed: 0.16, green: 0.32, blue: 0.6, alpha: 1).setFill()
+            NSBezierPath(rect: NSRect(x: 0, y: 802, width: 595, height: 40)).fill()
+            NSAttributedString(string: "Linear Algebra — demo",
+                               attributes: [.font: NSFont.boldSystemFont(ofSize: 16),
+                                            .foregroundColor: NSColor.white])
+                .draw(at: NSPoint(x: 40, y: 813))
+            NSAttributedString(string: "Chapter \((i + 3) / 4)",
+                               attributes: [.font: NSFont.boldSystemFont(ofSize: 28)])
+                .draw(at: NSPoint(x: 40, y: 740))
+            for line in 0..<14 {
+                NSColor.secondaryLabelColor.withAlphaComponent(0.35).setFill()
+                NSBezierPath(rect: NSRect(x: 40, y: 680 - line * 40,
+                                          width: line % 4 == 3 ? 340 : 515, height: 12)).fill()
+            }
+            NSAttributedString(string: "\(i)",
+                               attributes: [.font: NSFont.systemFont(ofSize: 14),
+                                            .foregroundColor: NSColor.secondaryLabelColor])
+                .draw(at: NSPoint(x: 288, y: 30))
+            NSGraphicsContext.current = nil
+            ctx.endPDFPage()
+        }
+        ctx.closePDF()
     }
 }
 
@@ -1410,6 +1562,14 @@ struct SplitView: View {
     @State private var extractSpec = ""
     @State private var cardZoom: Int?           // document page opened full size
     @AppStorage("thumbHeight") private var thumbHeight = 260.0
+
+    // Extra parameters exist only for the --screenshots harness, which renders
+    // this view offscreen where onAppear never fires. Real callers use SplitView().
+    init(demoDoc: PDFDocument? = nil, demoStarts: [Int]? = nil, demoPartCount: Int = 2) {
+        _doc = State(initialValue: demoDoc)
+        _starts = State(initialValue: demoStarts ?? [1])
+        _partCount = State(initialValue: demoPartCount)
+    }
 
     private var step: Int { c.printMode == .duplex ? 2 : 1 }
     private var maxParts: Int { max(2, min(12, c.printMode == .duplex ? c.sheetCount : c.pageCount)) }
@@ -1754,6 +1914,13 @@ struct BookDetailView: View {
     @State private var zoomPart: Int?           // part whose first page is opened full size
     @State private var partToPrint: BookPart?   // part awaiting settings confirmation
     @AppStorage("thumbHeight") private var thumbHeight = 260.0
+
+    // demoDocs exists only for the --screenshots harness (onAppear never fires
+    // offscreen); real callers use BookDetailView(bookID:).
+    init(bookID: String, demoDocs: [Int: PDFDocument] = [:]) {
+        self.bookID = bookID
+        _partDocs = State(initialValue: demoDocs)
+    }
 
     var body: some View {
         if let book = c.books.first(where: { $0.id == bookID }) {
