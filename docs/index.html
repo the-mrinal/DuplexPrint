@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DuplexPrint — print whole books on a printer that can't</title>
+<meta name="description" content="A native macOS app that gives single-sided printers a guided, crash-proof two-sided printing workflow. Built for the Epson L130.">
+<style>
+  :root {
+    --paper: #FDFDFA;
+    --paper-deep: #F4F3EE;
+    --ink: #16140F;
+    --ink-soft: #55524A;
+    --rule: #DDDAD0;
+    --cyan: #00A6C8;
+    --magenta: #E5007D;
+    --yellow: #F2C200;
+    --key: #16140F;
+    --cyan-link: #00738A;
+    --serif: ui-serif, "New York", "Iowan Old Style", Georgia, "Times New Roman", serif;
+    --sans: ui-sans-serif, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: var(--cyan-link); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:hover { color: var(--ink); }
+  a:focus-visible, button:focus-visible {
+    outline: 2px solid var(--cyan);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---- CMYK calibration strip (signature divider) ---- */
+  .calib { display: flex; height: 10px; width: 148px; }
+  .calib i { flex: 1; }
+  .calib i:nth-child(1) { background: var(--cyan); }
+  .calib i:nth-child(2) { background: var(--magenta); }
+  .calib i:nth-child(3) { background: var(--yellow); }
+  .calib i:nth-child(4) { background: var(--key); }
+  .calib.center { margin: 0 auto; }
+
+  /* ---- top bar ---- */
+  header.top {
+    border-bottom: 1px solid var(--rule);
+  }
+  .top-inner {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 0;
+    font-family: var(--mono); font-size: 13px; letter-spacing: 0.04em;
+  }
+  .top-inner .brand { font-weight: 700; color: var(--ink); text-decoration: none; display: flex; align-items: center; gap: 10px; }
+  .top-inner .brand .calib { width: 44px; height: 8px; }
+  .top-inner nav { display: flex; gap: 22px; }
+  .top-inner nav a { color: var(--ink-soft); text-decoration: none; }
+  .top-inner nav a:hover { color: var(--ink); }
+
+  /* ---- hero ---- */
+  .hero {
+    display: grid;
+    grid-template-columns: 1.15fr 0.85fr;
+    gap: 48px;
+    align-items: center;
+    padding: 84px 0 92px;
+  }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.10em;
+    text-transform: uppercase; color: var(--ink-soft);
+    margin-bottom: 20px;
+  }
+  .hero h1 {
+    font-family: var(--serif);
+    font-size: clamp(44px, 6.4vw, 74px);
+    line-height: 1.04;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    margin-bottom: 22px;
+    text-wrap: balance;
+  }
+  .hero h1 em {
+    font-style: italic;
+    color: var(--cyan-link);
+  }
+  .hero .lede {
+    font-size: 19px; color: var(--ink-soft); max-width: 46ch;
+    margin-bottom: 34px; text-wrap: pretty;
+  }
+  .cta-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    display: inline-block;
+    font-family: var(--mono); font-size: 14px; letter-spacing: 0.02em;
+    padding: 13px 22px;
+    text-decoration: none;
+    border: 1.5px solid var(--ink);
+  }
+  .btn.primary { background: var(--ink); color: var(--paper); }
+  .btn.primary:hover { background: var(--cyan-link); border-color: var(--cyan-link); color: #fff; }
+  .btn.ghost { color: var(--ink); }
+  .btn.ghost:hover { border-color: var(--cyan-link); color: var(--cyan-link); }
+
+  /* ---- the flipping sheet ---- */
+  .press { perspective: 1400px; display: flex; justify-content: center; }
+  .sheet-stack { position: relative; width: 250px; height: 334px; }
+  .sheet-stack::before, .sheet-stack::after {
+    content: ""; position: absolute; inset: 0;
+    background: var(--paper); border: 1px solid var(--rule);
+    box-shadow: 0 1px 3px rgba(20,18,15,0.08);
+  }
+  .sheet-stack::before { transform: translate(10px, 10px) rotate(0.8deg); }
+  .sheet-stack::after  { transform: translate(5px, 5px) rotate(-0.5deg); }
+  .sheet {
+    position: absolute; inset: 0; z-index: 2;
+    transform-style: preserve-3d;
+    animation: flip 7s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  }
+  @keyframes flip {
+    0%, 38%  { transform: rotateY(0deg); }
+    50%, 88% { transform: rotateY(180deg); }
+    100%     { transform: rotateY(360deg); }
+  }
+  .face {
+    position: absolute; inset: 0;
+    background: #fff;
+    border: 1px solid var(--rule);
+    box-shadow: 0 10px 28px rgba(20,18,15,0.14);
+    backface-visibility: hidden;
+    padding: 28px 24px;
+    display: flex; flex-direction: column;
+  }
+  .face.back { transform: rotateY(180deg); }
+  .face .pageno {
+    font-family: var(--serif); font-size: 30px; font-weight: 700;
+  }
+  .face .pass {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.09em;
+    text-transform: uppercase; color: var(--ink-soft);
+    margin-top: 2px; margin-bottom: 20px;
+  }
+  .face.front .pass b { color: var(--cyan-link); }
+  .face.back .pass b { color: var(--magenta); }
+  .face .lines { flex: 1; display: flex; flex-direction: column; gap: 9px; }
+  .face .lines i { height: 5px; background: var(--paper-deep); }
+  .face .lines i:nth-child(3n) { width: 82%; }
+  .face .lines i:nth-child(4n) { width: 64%; }
+  .face .lines i:last-child { width: 40%; }
+  /* crop marks on the live sheet */
+  .face .crop { position: absolute; width: 14px; height: 14px; }
+  .crop.tl { top: -1px; left: -1px; border-top: 1.5px solid var(--ink); border-left: 1.5px solid var(--ink); }
+  .crop.tr { top: -1px; right: -1px; border-top: 1.5px solid var(--ink); border-right: 1.5px solid var(--ink); }
+  .crop.bl { bottom: -1px; left: -1px; border-bottom: 1.5px solid var(--ink); border-left: 1.5px solid var(--ink); }
+  .crop.br { bottom: -1px; right: -1px; border-bottom: 1.5px solid var(--ink); border-right: 1.5px solid var(--ink); }
+  .press-caption {
+    text-align: center; margin-top: 22px;
+    font-family: var(--mono); font-size: 12px; color: var(--ink-soft); letter-spacing: 0.05em;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sheet { animation: none; }
+    html { scroll-behavior: auto; }
+    .reveal { transition: none !important; opacity: 1 !important; transform: none !important; }
+  }
+
+  /* ---- sections ---- */
+  section { padding: 78px 0; border-top: 1px solid var(--rule); }
+  .sec-label {
+    font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.10em;
+    text-transform: uppercase; color: var(--ink-soft);
+    display: flex; align-items: center; gap: 16px; margin-bottom: 18px;
+  }
+  .sec-label .calib { width: 44px; height: 8px; }
+  section h2 {
+    font-family: var(--serif); font-size: clamp(30px, 4vw, 42px);
+    font-weight: 700; line-height: 1.12; letter-spacing: -0.01em;
+    margin-bottom: 16px; max-width: 24ch; text-wrap: balance;
+  }
+  section .sub { color: var(--ink-soft); max-width: 60ch; margin-bottom: 44px; text-wrap: pretty; }
+
+  /* three passes */
+  .passes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-bottom: 52px; }
+  .pass-card {
+    border: 1px solid var(--rule); background: #fff;
+    padding: 26px 24px; position: relative;
+  }
+  .pass-card .tag {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.09em;
+    text-transform: uppercase; margin-bottom: 12px;
+  }
+  .pass-card:nth-child(1) .tag { color: var(--cyan-link); }
+  .pass-card:nth-child(2) .tag { color: var(--ink); }
+  .pass-card:nth-child(3) .tag { color: var(--magenta); }
+  .pass-card h3 { font-family: var(--serif); font-size: 22px; margin-bottom: 8px; }
+  .pass-card p { font-size: 15.5px; color: var(--ink-soft); }
+
+  /* screenshots */
+  .shot-frame { position: relative; display: block; max-width: 100%; }
+  .shot-frame img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--rule);
+    box-shadow: 0 18px 44px rgba(20,18,15,0.12);
+  }
+  .shot-frame .crop { position: absolute; width: 16px; height: 16px; }
+  .shot-row { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; align-items: start; }
+  .shot-row > *, .feature-row > * { min-width: 0; }
+  .shot-solo { text-align: center; }
+  .shot-cap {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-soft);
+    letter-spacing: 0.04em; margin-top: 14px;
+  }
+
+  /* feature split rows */
+  .feature-row {
+    display: grid; grid-template-columns: 0.9fr 1.1fr; gap: 56px; align-items: center;
+  }
+  .feature-row.rev { grid-template-columns: 1.1fr 0.9fr; }
+  .feature-row .copy h2 { margin-bottom: 14px; }
+  .feature-row .copy p { color: var(--ink-soft); margin-bottom: 14px; max-width: 48ch; }
+  .feature-row .copy ul { list-style: none; margin-top: 8px; }
+  .feature-row .copy li {
+    padding-left: 26px; position: relative; margin-bottom: 10px; color: var(--ink-soft); font-size: 16px;
+  }
+  .feature-row .copy li::before {
+    content: ""; position: absolute; left: 0; top: 8px;
+    width: 10px; height: 10px; border: 1.5px solid var(--cyan-link);
+  }
+  .feature-row .copy li b { color: var(--ink); font-weight: 600; }
+
+  /* resilience grid */
+  .grid-4 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 22px; }
+  .heal {
+    border: 1px solid var(--rule); background: #fff; padding: 24px;
+  }
+  .heal .sym { font-family: var(--mono); font-size: 12px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--magenta); margin-bottom: 8px; }
+  .heal h3 { font-family: var(--serif); font-size: 20px; margin-bottom: 6px; }
+  .heal p { font-size: 15px; color: var(--ink-soft); }
+
+  /* spec strip */
+  .specs {
+    border-top: 1px solid var(--rule);
+    background: var(--paper-deep);
+    padding: 34px 0;
+  }
+  .specs .row {
+    display: flex; flex-wrap: wrap; gap: 12px 38px; justify-content: center;
+    font-family: var(--mono); font-size: 13px; letter-spacing: 0.03em; color: var(--ink-soft);
+  }
+  .specs .row span::before { content: "▪ "; color: var(--cyan); }
+
+  /* footer */
+  footer { padding: 56px 0 64px; text-align: center; }
+  footer .calib { margin: 0 auto 24px; }
+  footer p { font-size: 15px; color: var(--ink-soft); }
+  footer .fine { font-family: var(--mono); font-size: 12px; margin-top: 10px; }
+
+  /* reveal on scroll */
+  .reveal { opacity: 0; transform: translateY(18px); transition: opacity 0.7s ease, transform 0.7s ease; }
+  .reveal.in { opacity: 1; transform: none; }
+
+  /* ---- responsive ---- */
+  @media (max-width: 880px) {
+    .hero { grid-template-columns: 1fr; gap: 56px; padding: 56px 0 64px; text-align: left; }
+    .press { order: 2; }
+    .passes { grid-template-columns: 1fr; }
+    .shot-row { grid-template-columns: 1fr; }
+    .feature-row, .feature-row.rev { grid-template-columns: 1fr; gap: 34px; }
+    .grid-4 { grid-template-columns: 1fr; }
+    .top-inner nav { display: none; }
+    section { padding: 58px 0; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap top-inner">
+    <a class="brand" href="#"><span class="calib" aria-hidden="true"><i></i><i></i><i></i><i></i></span>DuplexPrint</a>
+    <nav aria-label="Sections">
+      <a href="#flip">The flip</a>
+      <a href="#split">Split</a>
+      <a href="#library">Library</a>
+      <a href="#healing">Self-healing</a>
+      <a href="#get">Get it</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <div class="hero">
+      <div>
+        <p class="eyebrow">A native macOS app · built for the Epson L130</p>
+        <h1>Print whole books, two&#8209;sided, on a printer that <em>can't</em>.</h1>
+        <p class="lede">Your printer has no duplexer. DuplexPrint prints the fronts, walks you through one flip of the stack, then prints the backs — and never loses its place, no matter what goes wrong.</p>
+        <div class="cta-row">
+          <a class="btn primary" href="https://github.com/the-mrinal/DuplexPrint/releases">↓ Download the DMG</a>
+          <a class="btn ghost" href="https://github.com/the-mrinal/DuplexPrint">View source</a>
+        </div>
+      </div>
+      <div>
+        <div class="press" aria-hidden="true">
+          <div class="sheet-stack">
+            <div class="sheet">
+              <div class="face front">
+                <span class="crop tl"></span><span class="crop tr"></span><span class="crop bl"></span><span class="crop br"></span>
+                <div class="pageno">1</div>
+                <div class="pass"><b>Pass 1</b> · odd pages</div>
+                <div class="lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              </div>
+              <div class="face back">
+                <span class="crop tl"></span><span class="crop tr"></span><span class="crop bl"></span><span class="crop br"></span>
+                <div class="pageno">2</div>
+                <div class="pass"><b>Pass 2</b> · even pages</div>
+                <div class="lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="press-caption">fronts → flip once → backs</p>
+      </div>
+    </div>
+  </div>
+
+  <section id="flip">
+    <div class="wrap">
+      <p class="sec-label reveal"><span class="calib" aria-hidden="true"><i></i><i></i><i></i><i></i></span>How it works</p>
+      <h2 class="reveal">One guided flip. That's the whole trick.</h2>
+      <p class="sub reveal">Pick a PDF, choose paper, quality and colour once — then the app runs the show. Nothing prints until you confirm, and the screen always shows exactly which page is coming out.</p>
+
+      <div class="passes">
+        <div class="pass-card reveal">
+          <p class="tag">Pass 1 · Fronts</p>
+          <h3>Odd pages print</h3>
+          <p>Live progress, sheet by sheet, with a preview of the exact page in the printer right now.</p>
+        </div>
+        <div class="pass-card reveal">
+          <p class="tag">You · The flip</p>
+          <h3>Turn the stack once</h3>
+          <p>Step-by-step instructions for your exact printer. The app waits — nothing happens until you say go.</p>
+        </div>
+        <div class="pass-card reveal">
+          <p class="tag">Pass 2 · Backs</p>
+          <h3>Even pages print</h3>
+          <p>Backs land perfectly behind their fronts. Done: a two-sided book from a one-sided printer.</p>
+        </div>
+      </div>
+
+      <div class="shot-row">
+        <figure class="shot-solo reveal">
+          <span class="shot-frame">
+            <img src="screenshots/printing.png" alt="Printing screen showing live progress and the exact page being printed" loading="lazy">
+            <span class="crop tl" aria-hidden="true"></span><span class="crop tr" aria-hidden="true"></span><span class="crop bl" aria-hidden="true"></span><span class="crop br" aria-hidden="true"></span>
+          </span>
+          <figcaption class="shot-cap">printing — you always see the page in flight</figcaption>
+        </figure>
+        <figure class="shot-solo reveal">
+          <span class="shot-frame">
+            <img src="screenshots/flip.png" alt="Flip screen with step-by-step instructions for turning the stack" loading="lazy">
+            <span class="crop tl" aria-hidden="true"></span><span class="crop tr" aria-hidden="true"></span><span class="crop bl" aria-hidden="true"></span><span class="crop br" aria-hidden="true"></span>
+          </span>
+          <figcaption class="shot-cap">the flip — guided, unhurried, un-mess-up-able</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="split">
+    <div class="wrap">
+      <div class="feature-row">
+        <div class="copy">
+          <p class="sec-label reveal"><span class="calib" aria-hidden="true"><i></i><i></i><i></i><i></i></span>The splitter</p>
+          <h2 class="reveal">Turn a 242-page book into printable parts.</h2>
+          <p class="reveal">Big books are scary to print in one go. Split one into equal parts — every part starts on a fresh sheet — or pull out exactly the pages you type, like <code style="font-family:var(--mono);font-size:14px;background:var(--paper-deep);padding:2px 6px;">5–20, 35, 40–42</code>.</p>
+          <ul class="reveal">
+            <li><b>See every boundary</b> — first and last page thumbnails on each part, with arrows to nudge them.</li>
+            <li><b>Open any page</b> full-size before committing to anything.</li>
+            <li><b>Duplex-safe</b> — boundaries snap so fronts and backs never split across parts.</li>
+          </ul>
+        </div>
+        <figure class="shot-solo reveal">
+          <span class="shot-frame">
+            <img src="screenshots/split-screen.png" alt="Split screen with part cards, page thumbnails and adjustable boundaries" loading="lazy">
+            <span class="crop tl" aria-hidden="true"></span><span class="crop tr" aria-hidden="true"></span><span class="crop bl" aria-hidden="true"></span><span class="crop br" aria-hidden="true"></span>
+          </span>
+          <figcaption class="shot-cap">the split workshop</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="library">
+    <div class="wrap">
+      <div class="feature-row rev">
+        <figure class="shot-solo reveal">
+          <span class="shot-frame">
+            <img src="screenshots/book-page.png" alt="Book page showing per-part printed status with Print and Resume buttons" loading="lazy">
+            <span class="crop tl" aria-hidden="true"></span><span class="crop tr" aria-hidden="true"></span><span class="crop bl" aria-hidden="true"></span><span class="crop br" aria-hidden="true"></span>
+          </span>
+          <figcaption class="shot-cap">a book, part by part</figcaption>
+        </figure>
+        <div class="copy">
+          <p class="sec-label reveal"><span class="calib" aria-hidden="true"><i></i><i></i><i></i><i></i></span>The library</p>
+          <h2 class="reveal">It remembers where you left off. Always.</h2>
+          <p class="reveal">Every split becomes a book with per-part status — <em>not printed, in progress, printed ✓</em>. Print part one today, part three next month. Progress is saved after <b>every single sheet</b>.</p>
+          <ul class="reveal">
+            <li><b>Quit, reboot, lose power</b> — on launch it offers to resume from the exact sheet.</li>
+            <li><b>Match against your stack</b> — resuming shows a preview of the next page so you can check it against the paper in your hand.</li>
+            <li><b>Nothing prints blindly</b> — every job starts with a confirmation showing every setting it will use.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="healing">
+    <div class="wrap">
+      <p class="sec-label reveal"><span class="calib" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Self-healing</p>
+      <h2 class="reveal">Built from real printing disasters.</h2>
+      <p class="sub reveal">Every failure mode below happened while printing real books. Each one is now handled automatically.</p>
+      <div class="grid-4">
+        <div class="heal reveal">
+          <p class="sym">media-empty · jam · cover-open</p>
+          <h3>Out of paper? It waits.</h3>
+          <p>Plain-English instructions on screen and infinite patience — load paper and it just continues.</p>
+        </div>
+        <div class="heal reveal">
+          <p class="sym">usb drop · driver wedge</p>
+          <h3>Connection died? It recovers.</h3>
+          <p>The dead job is cancelled and resubmitted automatically from the last completed sheet — for up to 30 minutes.</p>
+        </div>
+        <div class="heal reveal">
+          <p class="sym">caffeinate -ims</p>
+          <h3>The Mac stays awake.</h3>
+          <p>Sleep cuts USB power mid-job. DuplexPrint holds the Mac awake for exactly as long as the printer needs it.</p>
+        </div>
+        <div class="heal reveal">
+          <p class="sym">OutputOrder · skip-blank-page</p>
+          <h3>Driver traps, defused.</h3>
+          <p>The Epson driver ships with settings that reverse page order and break front/back pairing. Every job pins them safe.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="get">
+    <div class="wrap" style="text-align:center;">
+      <p class="sec-label reveal" style="justify-content:center;"><span class="calib" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Get it</p>
+      <h2 class="reveal" style="margin-left:auto;margin-right:auto;">Drag it in. Print a book.</h2>
+      <p class="sub reveal" style="margin-left:auto;margin-right:auto;">Download the DMG, drag DuplexPrint to Applications, approve it once in System Settings (it's ad-hoc signed, not notarized) — and you're printing.</p>
+      <div class="cta-row reveal" style="justify-content:center;">
+        <a class="btn primary" href="https://github.com/the-mrinal/DuplexPrint/releases">↓ Download for macOS</a>
+        <a class="btn ghost" href="https://github.com/the-mrinal/DuplexPrint">GitHub</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="specs">
+  <div class="wrap row">
+    <span>one Swift file</span>
+    <span>zero dependencies</span>
+    <span>universal binary</span>
+    <span>macOS 13+</span>
+    <span>talks straight to CUPS</span>
+    <span>built-in self-test</span>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <span class="calib center" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+    <p>Made by Mrinal, for an Epson L130 that deserved better.</p>
+    <p class="fine">Built with Claude Code · screenshots rendered by the app itself</p>
+  </div>
+</footer>
+
+<script>
+  const io = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+    }
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+</script>
+
+</body>
+</html>
